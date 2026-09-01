@@ -1,0 +1,22 @@
+{
+  "mode": "chipmem",
+  "domain": "example",
+  "task_directory": "../dataset/synthetic",
+  "task_order": [
+    "task_a",
+    "task_b"
+  ],
+  "task_artifact": "TASK.md",
+  "state_directory": "../state",
+  "output_directory": "../output",
+  "top_k": 2,
+  "threshold": 0.6,
+  "embedding_dimension": 8,
+  "agent_endpoint_env": null,
+  "step_limit": 32,
+  "session_timeout_seconds": 600,
+  "embedding_callable": "experiments.example_plugins:embed",
+  "agent_callable": "experiments.example_plugins:agent",
+  "harness_callable": "experiments.example_plugins:harness",
+  "distill_callable": "experiments.example_plugins:distill"
+}
