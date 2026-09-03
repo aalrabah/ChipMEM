@@ -1,8 +1,8 @@
 # ChipMEM
 
-ChipMEM is a task-indexed procedural memory layer for tool-using agents. It retrieves complete verified skills for later tasks and learns new skills only after a deterministic evaluation harness returns `PASS`.
+ChipMEM combines task-indexed procedural memory with step-online Bayesian statistical memory for tool-using agents. It retrieves complete verified skills, predicts retry success before tool calls, updates from every completed tool call, and learns new skills only after a deterministic evaluation harness returns `PASS`.
 
-This repository contains the public procedural-memory implementation and a generic Python experiment runner. It does not contain paper results, raw trajectories, trained memory states, proprietary agents, private prompts, commercial datasets, or commercial tool configurations.
+This repository contains the public procedural and statistical-memory implementation and a generic Python experiment runner. It does not contain paper results, raw trajectories, trained memory states, proprietary agents, private prompts, commercial datasets, or commercial tool configurations.
 
 ## Core behavior
 
@@ -14,7 +14,9 @@ This repository contains the public procedural-memory implementation and a gener
 6. Run the configured agent and deterministic evaluation harness.
 7. Create at most one immutable skill after a verified `PASS`.
 8. Create no skill after `FAIL` or `INVALID`.
-9. Carry verified skills forward to later tasks in `chipmem` mode.
+9. Predict before each tool call and update statistical memory after every completed call.
+10. Provide advisory recovery guidance when predicted retry success is below `0.20`.
+11. Carry procedural and statistical state forward only within the selected mode.
 
 ## Repository layout
 
@@ -33,7 +35,14 @@ ChipMEM/
 │   ├── learning.py
 │   ├── store.py
 │   ├── injector.py
-│   └── task_document.py
+│   ├── task_document.py
+│   └── statistical/
+│       ├── model.py
+│       ├── features.py
+│       ├── extraction.py
+│       ├── nudge.py
+│       ├── online.py
+│       └── hooks.py
 ├── dataset/
 │   ├── README.md
 │   └── synthetic/
@@ -93,7 +102,7 @@ def embed(task_document: str, dimension: int) -> list[float]:
 ### Agent callable
 
 ```python
-def agent(task_document, memory_context, task_directory, session_directory, execution) -> dict:
+def agent(task_document, memory_context, task_directory, session_directory, execution, hooks=None) -> dict:
     # execution contains endpoint, step_limit, and session_timeout_seconds.
     return {
         "artifact": ...,
@@ -102,6 +111,8 @@ def agent(task_document, memory_context, task_directory, session_directory, exec
 ```
 
 The agent result must be a JSON-serializable dictionary containing a JSON-serializable `transcript` list. This allows the runner to preserve the exact adapter result before evaluation.
+
+For `memory_off` and `procedural_only`, the runner preserves the original five-argument adapter call and does not pass `hooks`. For `statistical_only` and `chipmem`, the sixth argument is required. The adapter must call `hooks.before_tool_call(tool, arguments)` immediately before every tool call and `hooks.after_tool_call(tool, arguments, output)` immediately after every completed call. A returned warning is advisory: the already-selected call still executes, and the advice may influence only the next decision. Statistical modes fail closed when an adapter completes without exercising these hooks.
 
 ### Evaluation-harness callable
 
@@ -135,7 +146,18 @@ Run with:
 python3 experiments/run_experiment.py --config experiments/config.example.json
 ```
 
-Use `"mode": "memory_off"` for the no-memory control and `"mode": "chipmem"` for retrieval and PASS-only continual learning.
+The runner supports four explicit modes:
+
+| Mode | Procedural | Statistical |
+|---|---:|---:|
+| `memory_off` | No | No |
+| `procedural_only` | Yes | No |
+| `statistical_only` | No | Yes |
+| `chipmem` | Yes | Yes |
+
+`chipmem` is the full system. Statistical modes use a fixed default nudge threshold of `0.20` and four retry buckets (`0`, `1`, `2`, `3+`). Eligible warnings are not capped by default. The optional recovery planner may return at most three steps.
+
+Procedural modes default to `procedural_policy: "evolving"`, where a verified PASS may add one skill. Set `procedural_policy: "read_only"` with `procedural_seed_directory` to reproduce a loaded fixed-bank evaluation. The source bank is copied into private mode state and is never modified. Query embeddings use a separate runtime cache, so the copied procedural tree remains byte-stable.
 
 ## Output
 
@@ -165,8 +187,10 @@ Gate and finalized events collectively record:
 - Created skill ID, if any
 - Final `pass`, `fail`, or `invalid` verdict
 - Memory-state hashes before and after the task
+- Procedural and statistical state hashes
+- Statistical update and nudge counts
 
-The separate state directory contains complete immutable skill files and cached task embeddings.
+The separate state directory contains complete immutable skill files, cached task embeddings, and mode-private statistical state.
 
 ## Skill format
 
@@ -178,6 +202,19 @@ state/agents/<domain>/memory/skill_0001/
 ```
 
 `SKILL.md` contains the complete reusable procedure. `skill.json` records the source-task label, exact source-artifact SHA-256, and verified-PASS provenance. `embeddings.json` stores the vector carried by the task-bound `TaskEmbedding` handle, not an embedding of the skill text.
+
+## Statistical state
+
+Statistical modes persist three runtime-generated files:
+
+```text
+state/statistical/agents/<domain>/memory/
+├── model.json
+├── nudge_experience.jsonl
+└── recovery_experience.jsonl
+```
+
+`model.json` stores the hierarchical retry and recovery counts. The experience files preserve idempotent step and recovery observations. To start from an external trained state without modifying it, set `statistical_seed_directory`; the runner copies and byte-verifies the three canonical files into the mode-private destination before execution.
 
 ## Tests
 
@@ -197,6 +234,12 @@ The tests cover:
 - Durable gate evidence before distillation
 - Refusal to overwrite skills, materialized memory, or run outputs
 - A self-contained synthetic end-to-end evolving-memory run
+- Four-mode component isolation
+- Differential parity with the executed Bayesian mathematics
+- Prediction-before-call and update-after-call ordering
+- Retry buckets, hierarchical probabilities, recovery ranking, and threshold behavior
+- Idempotent online updates and loaded-state copying
+- Combined procedural and statistical carry-forward
 
 ## Synthetic adapters
 
@@ -209,7 +252,7 @@ This repository intentionally excludes:
 - Existing experiment results or paper tables
 - Raw session transcripts
 - Existing skill libraries and embeddings
-- Bayesian state
+- Trained statistical state and historical observations
 - Proprietary agent implementations and prompts
 - Private or commercial datasets
 - Commercial EDA scripts and licenses

@@ -20,8 +20,26 @@ def agent(
     task_directory: Path,
     session_directory: Path,
     execution: dict,
+    hooks=None,
 ) -> dict:
+    tool_trace = []
+    advice = []
+    arguments = {"script": "synth"}
+    if hooks is not None:
+        for output in (
+            "command failed with return code 1",
+            "command failed with return code 1",
+            "synthesis completed",
+        ):
+            note = hooks.before_tool_call("yosys", arguments)
+            if note:
+                advice.append(note)
+            hooks.after_tool_call("yosys", arguments, output)
+            tool_trace.append(
+                {"tool": "yosys", "arguments": arguments, "output": output}
+            )
     return {
+        "advice": advice,
         "artifact": task_document,
         "execution": execution,
         "transcript": [
@@ -29,7 +47,24 @@ def agent(
             {"role": "memory", "content": memory_context},
             {"role": "assistant", "content": "synthetic completion"},
         ],
+        "tool_trace": tool_trace,
     }
+
+
+def legacy_agent(
+    task_document: str,
+    memory_context: str,
+    task_directory: Path,
+    session_directory: Path,
+    execution: dict,
+) -> dict:
+    return agent(
+        task_document,
+        memory_context,
+        task_directory,
+        session_directory,
+        execution,
+    )
 
 
 def harness(
