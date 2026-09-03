@@ -67,6 +67,24 @@ def legacy_agent(
     )
 
 
+def agent_without_hooks(
+    task_document: str,
+    memory_context: str,
+    task_directory: Path,
+    session_directory: Path,
+    execution: dict,
+    hooks,
+) -> dict:
+    del hooks
+    return legacy_agent(
+        task_document,
+        memory_context,
+        task_directory,
+        session_directory,
+        execution,
+    )
+
+
 def harness(
     task_document: str,
     agent_result: dict,

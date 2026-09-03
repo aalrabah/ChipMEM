@@ -3,6 +3,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+import experiments.run_experiment as runner_module
+from chipmem.memory import ChipMEM
+from chipmem.statistical.features import OpenFlowFeatures
+from chipmem.statistical.online import StatisticalMemory
 from experiments.run_experiment import run_experiment
 
 
@@ -155,3 +161,187 @@ def test_runner_refuses_existing_output_directory(tmp_path):
         pass
     else:
         raise AssertionError("runner reused an existing output directory")
+
+
+def test_runner_refuses_output_created_after_preflight(tmp_path, monkeypatch):
+    tasks = tmp_path / "tasks"
+    task = tasks / "task_a"
+    task.mkdir(parents=True)
+    (task / "TASK.md").write_text("PASS race task")
+    output = tmp_path / "nested" / "output"
+    config = {
+        "mode": "memory_off",
+        "domain": "example",
+        "task_directory": str(tasks),
+        "task_order": ["task_a"],
+        "task_artifact": "TASK.md",
+        "state_directory": str(tmp_path / "state"),
+        "output_directory": str(output),
+        "top_k": 2,
+        "threshold": 0.6,
+        "embedding_dimension": 8,
+        "embedding_callable": "experiments.example_plugins:embed",
+        "agent_callable": "experiments.example_plugins:agent",
+        "harness_callable": "experiments.example_plugins:harness",
+        "distill_callable": "experiments.example_plugins:distill",
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    original = runner_module._configuration_context
+
+    def racing_context(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result[4].mkdir(parents=True)
+        (result[4] / "preexisting.txt").write_text("preserve me")
+        return result
+
+    monkeypatch.setattr(runner_module, "_configuration_context", racing_context)
+
+    with pytest.raises(FileExistsError):
+        run_experiment(path)
+
+    assert (output / "preexisting.txt").read_text() == "preserve me"
+    assert not (output / "config.json").exists()
+    assert not (output / "sessions").exists()
+
+
+def test_direct_runner_preflights_malformed_seed_before_writing(tmp_path):
+    tasks = tmp_path / "tasks"
+    task = tasks / "task_a"
+    task.mkdir(parents=True)
+    (task / "TASK.md").write_text("PASS malformed seed task")
+    seed = tmp_path / "seed" / "agents" / "example" / "memory"
+    seed.mkdir(parents=True)
+    (seed / "model.json").write_text("not-json")
+    (seed / "nudge_experience.jsonl").write_text("")
+    (seed / "recovery_experience.jsonl").write_text("")
+    config = {
+        "mode": "statistical_only",
+        "domain": "example",
+        "task_directory": str(tasks),
+        "task_order": ["task_a"],
+        "task_artifact": "TASK.md",
+        "state_directory": str(tmp_path / "state"),
+        "output_directory": str(tmp_path / "output"),
+        "top_k": 2,
+        "threshold": 0.6,
+        "embedding_dimension": 8,
+        "embedding_callable": "experiments.example_plugins:embed",
+        "agent_callable": "experiments.example_plugins:agent",
+        "harness_callable": "experiments.example_plugins:harness",
+        "distill_callable": "experiments.example_plugins:distill",
+        "statistical_seed_directory": str(tmp_path / "seed"),
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+
+    with pytest.raises(ValueError, match="statistical model"):
+        run_experiment(path)
+
+    assert not (tmp_path / "state").exists()
+    assert not (tmp_path / "output").exists()
+
+
+def test_runner_rejects_every_seed_and_writable_path_overlap(tmp_path):
+    def config_for(root, mode):
+        task = root / "tasks" / "task_a"
+        task.mkdir(parents=True)
+        (task / "TASK.md").write_text("PASS overlap task")
+        return {
+            "mode": mode,
+            "domain": "example",
+            "task_directory": str(root / "tasks"),
+            "task_order": ["task_a"],
+            "task_artifact": "TASK.md",
+            "state_directory": str(root / "state"),
+            "output_directory": str(root / "output"),
+            "top_k": 2,
+            "threshold": 0.0,
+            "embedding_dimension": 8,
+            "embedding_callable": "experiments.example_plugins:embed",
+            "agent_callable": "experiments.example_plugins:agent",
+            "harness_callable": "experiments.example_plugins:harness",
+            "distill_callable": "experiments.example_plugins:distill",
+        }
+
+    def procedural_seed(root):
+        memory = ChipMEM(root, "example", threshold=0.0, allow_empty=True)
+        handle = memory.embed_task(
+            "seed",
+            lambda _: [1.0] * 8,
+            identity={"model": "seed", "dimension": 8, "provider": "local"},
+        )
+        memory.learn(
+            [],
+            source_task="seed",
+            verdict=memory.run_harness(handle, lambda: "pass"),
+            distill=lambda *_: "seed skill",
+            task_embedding=handle,
+        )
+
+    def statistical_seed(root):
+        memory = StatisticalMemory(root, "example", OpenFlowFeatures())
+        arguments = {"script": "synth"}
+        memory.before_tool_call("seed", "yosys", arguments)
+        memory.after_tool_call(
+            "seed",
+            "yosys",
+            arguments,
+            "command failed with return code 1",
+        )
+
+    def snapshot(root):
+        return {
+            path.relative_to(root): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and not path.name.endswith(".lock")
+        }
+
+    cases = []
+    root = tmp_path / "output-in-statistical"
+    root.mkdir()
+    config = config_for(root, "statistical_only")
+    seed = root / "seed"
+    statistical_seed(seed)
+    config["statistical_seed_directory"] = str(seed)
+    config["output_directory"] = str(seed / "run-output")
+    cases.append((root, seed, config))
+
+    root = tmp_path / "output-in-procedural"
+    root.mkdir()
+    config = config_for(root, "procedural_only")
+    seed = root / "seed"
+    procedural_seed(seed)
+    config["procedural_policy"] = "read_only"
+    config["procedural_seed_directory"] = str(seed)
+    config["output_directory"] = str(seed / "run-output")
+    cases.append((root, seed, config))
+
+    root = tmp_path / "procedural-at-statistical"
+    root.mkdir()
+    config = config_for(root, "chipmem")
+    seed = root / "state" / "statistical"
+    procedural_seed(seed)
+    config["procedural_policy"] = "read_only"
+    config["procedural_seed_directory"] = str(seed)
+    cases.append((root, seed, config))
+
+    root = tmp_path / "statistical-at-procedural"
+    root.mkdir()
+    config = config_for(root, "chipmem")
+    seed = root / "state" / "procedural"
+    statistical_seed(seed)
+    config["statistical_seed_directory"] = str(seed)
+    cases.append((root, seed, config))
+
+    for root, seed, config in cases:
+        before = snapshot(seed)
+        config_path = root / "config.json"
+        config_path.write_text(json.dumps(config))
+
+        with pytest.raises(ValueError, match="overlap"):
+            run_experiment(config_path)
+
+        assert snapshot(seed) == before
+        output = Path(config["output_directory"])
+        assert not output.exists()

@@ -22,6 +22,7 @@ This repository contains the public procedural and statistical-memory implementa
 
 ```text
 ChipMEM/
+├── main.py
 ├── README.md
 ├── LICENSE
 ├── requirements.txt
@@ -71,6 +72,149 @@ python3 -m venv .venv
 ```
 
 The runtime implementation uses only the Python standard library. `pytest` is included for verification.
+
+## Running experiments with `main.py`
+
+`main.py` is the primary experiment interface. Users select modes, paths,
+adapters, retrieval settings, statistical settings, and execution limits from
+the command line or a JSON configuration; no Python source edits are required.
+
+Show the commands:
+
+```text
+python3 main.py --help
+```
+
+List every supported experiment knob and every fixed methodology constant:
+
+```text
+python3 main.py list-knobs
+python3 main.py list-knobs --json
+```
+
+### Recommended workflow
+
+First inspect the effective configuration:
+
+```text
+python3 main.py print-config \
+  --config experiments/config.example.json
+```
+
+Then validate the configuration, task artifacts, paths, adapters, optional
+seed states, and endpoint environment without creating state or output:
+
+```text
+python3 main.py validate \
+  --config experiments/config.example.json \
+  --state-directory runs/example-state \
+  --output-directory runs/example-output
+```
+
+`run --dry-run` performs the same side-effect-free preflight:
+
+```text
+python3 main.py run \
+  --config experiments/config.example.json \
+  --state-directory runs/example-state \
+  --output-directory runs/example-output \
+  --dry-run
+```
+
+Run after validation:
+
+```text
+python3 main.py run \
+  --config experiments/config.example.json \
+  --state-directory runs/example-state \
+  --output-directory runs/example-output
+```
+
+Output directories must be new. The runner refuses to overwrite an existing
+output directory.
+
+### Selecting a memory mode
+
+Use one of the four explicit modes:
+
+```text
+python3 main.py run --mode memory_off       --state-directory runs/off-state  --output-directory runs/off-output
+python3 main.py run --mode procedural_only  --state-directory runs/proc-state --output-directory runs/proc-output
+python3 main.py run --mode statistical_only --state-directory runs/stat-state --output-directory runs/stat-output
+python3 main.py run --mode chipmem           --state-directory runs/full-state --output-directory runs/full-output
+```
+
+These commands use `experiments/config.example.json` as the base configuration.
+Supply `--config PATH` to use a different base file.
+
+### Overriding experiment settings
+
+Every runner setting has a named flag. For example:
+
+```text
+python3 main.py run \
+  --config experiments/config.example.json \
+  --mode chipmem \
+  --domain rtlopt \
+  --task-directory /path/to/tasks \
+  --task-order design_a design_b design_c \
+  --task-artifact TASK.md \
+  --state-directory /path/to/state \
+  --output-directory /path/to/output \
+  --top-k 2 \
+  --retrieval-threshold 0.60 \
+  --embedding-dimension 1024 \
+  --embedding-callable package.adapters:embed \
+  --agent-callable package.adapters:agent \
+  --harness-callable package.adapters:harness \
+  --distill-callable package.adapters:distill \
+  --features-callable package.features:Features \
+  --step-limit 32 \
+  --session-timeout-seconds 600 \
+  --nudge-threshold 0.20 \
+  --max-nudges none
+```
+
+`--agent-endpoint-env`, `--planner-callable`,
+`--procedural-seed-directory`, and `--statistical-seed-directory` accept
+`none` or `null`. `--max-nudges` accepts `none`, `null`, `unlimited`, or
+`uncapped` for the reported uncapped behavior.
+
+`--procedural-policy auto` selects `evolving` for `procedural_only` and
+`chipmem`, and `disabled` for `memory_off` and `statistical_only`. The aliases
+`none` and `null` also select `auto`.
+
+For future or programmatic settings, `--set KEY=JSON` is available:
+
+```text
+python3 main.py print-config \
+  --set 'task_order=["task_a","task_b"]' \
+  --set 'agent_endpoint_env=null'
+```
+
+Precedence is:
+
+```text
+named CLI flag > --set KEY=JSON > JSON configuration
+```
+
+Paths supplied on the command line resolve from the current working directory.
+Paths stored in a JSON configuration resolve from that configuration file's
+directory. `print-config` displays absolute resolved paths.
+
+The reported statistical methodology uses `nudge_threshold=0.20` and no
+warning cap. Changing either requires an explicit acknowledgement:
+
+```text
+python3 main.py run \
+  --nudge-threshold 0.30 \
+  --allow-methodology-overrides \
+  --state-directory runs/variant-state \
+  --output-directory runs/variant-output
+```
+
+The resolved effective configuration is stored as `output/config.json` for
+every completed run.
 
 ## Task format
 
@@ -140,7 +284,13 @@ A deterministic external evaluation command can be wrapped by the configured Pyt
 
 Copy `experiments/config.example.json` and update the dataset, state, output, and adapter fields. Relative paths are resolved from the configuration file. The bundled configuration reads privacy-safe tasks from `../dataset/synthetic` and writes `../state` and `../output` at the repository root. Output directories must be new. The runner refuses to overwrite an existing output directory.
 
-Run with:
+Run with the primary interface:
+
+```text
+python3 main.py run --config experiments/config.example.json
+```
+
+The original entry point remains available for backward compatibility:
 
 ```text
 python3 experiments/run_experiment.py --config experiments/config.example.json
@@ -195,7 +345,7 @@ The separate state directory contains complete immutable skill files, cached tas
 ## Skill format
 
 ```text
-state/agents/<domain>/memory/skill_0001/
+state/procedural/agents/<domain>/memory/skill_0001/
 ├── SKILL.md
 ├── skill.json
 └── embeddings.json

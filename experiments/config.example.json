@@ -17,6 +17,8 @@
   "session_timeout_seconds": 600,
   "nudge_threshold": 0.20,
   "max_nudges": null,
+  "procedural_policy": null,
+  "procedural_seed_directory": null,
   "features_callable": "chipmem.statistical.features:OpenFlowFeatures",
   "planner_callable": null,
   "statistical_seed_directory": null,
